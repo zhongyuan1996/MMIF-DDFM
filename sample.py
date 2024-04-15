@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from skimage.io import imsave
 import warnings
+from PIL import Image
 warnings.filterwarnings('ignore')
 
 def image_read(path, mode='RGB'):
@@ -35,7 +36,9 @@ if __name__ == '__main__':
     parser.add_argument('--model_config', type=str,default = 'configs/model_config_imagenet.yaml')
     parser.add_argument('--diffusion_config', type=str,default='configs/diffusion_config.yaml')                     
     parser.add_argument('--gpu', type=int, default=0)
-    parser.add_argument('--save_dir', type=str, default='./output')
+    parser.add_argument('--save_dir', type=str, default='/data/yuan/DDFM_dir/output')
+    parser.add_argument('--input_dir', type=str, default='/data/yuan/DDFM_dir/input')
+    #parser.add_argument('--U_ddpm_dir', type=str, defaule='/data/yuan/DDFM_dir/models/')
     args = parser.parse_args()
    
     # logger
@@ -61,7 +64,8 @@ if __name__ == '__main__':
     sample_fn = partial(sampler.p_sample_loop, model=model)
    
     # Working directory
-    test_folder=r"input"     
+    #test_folder=r"input"
+    test_folder=args.input_dir     
     out_path = args.save_dir
     os.makedirs(out_path, exist_ok=True)
     for img_dir in ['recon', 'progress']:
@@ -88,7 +92,7 @@ if __name__ == '__main__':
         logger.info(f"Inference for image {i}")
 
         # Sampling
-        seed = 3407
+        seed = 3332245543223344
         torch.manual_seed(seed)
         x_start = torch.randn((inf_img.repeat(1, 3, 1, 1)).shape, device=device)  
 
@@ -98,7 +102,12 @@ if __name__ == '__main__':
         sample= sample.detach().cpu().squeeze().numpy()
         sample=np.transpose(sample, (1,2,0))
         sample=cv2.cvtColor(sample,cv2.COLOR_RGB2YCrCb)[:,:,0]
-        sample=(sample-np.min(sample))/(np.max(sample)-np.min(sample))
-        sample=((sample)*255)
-        imsave(os.path.join(os.path.join(out_path, 'recon'), "{}.png".format(img_name.split(".")[0])),sample)
-        i = i+1
+        #sample=(sample-np.min(sample))/(np.max(sample)-np.min(sample))
+        #sample=((sample)*255)
+        #imsave(os.path.join(os.path.join(out_path, 'recon'), "{}.png".format(img_name.split(".")[0])),sample)
+        #i = i+1
+        sample = (sample - np.min(sample)) / (np.max(sample) - np.min(sample)) * 255
+        sample = sample.astype(np.uint8)
+        image = Image.fromarray(sample)
+        image.save(os.path.join(out_path, 'recon', f"{os.path.splitext(img_name)[0]}.png"))
+        i += 1
