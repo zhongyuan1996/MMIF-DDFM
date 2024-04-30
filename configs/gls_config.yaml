@@ -1,0 +1,9 @@
+c: 1
+h: 288
+w: 512
+emb_dim: 768
+patch_size: 16
+num_heads: 4
+forward_expansion: 1
+dropout: 0.1
+num_layers: 2

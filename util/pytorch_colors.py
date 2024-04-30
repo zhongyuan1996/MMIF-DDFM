@@ -89,3 +89,58 @@ def convert(input_, type_):
         'rgb2ycbcr': rgb_to_ycbcr(input_),
         'ycbcr2rgb': ycbcr_to_rgb(input_)
     }.get(type_, err(type_))
+
+def rgb_to_ycbcr_torch(img):
+    # Constants for RGB to YCbCr conversion
+    transform = torch.tensor([
+        [0.299, 0.587, 0.114],      # coefficients for Y
+        [-0.168935, -0.331665, 0.5], # coefficients for Cb
+        [0.5, -0.418688, -0.081312]  # coefficients for Cr
+    ], dtype=img.dtype, device=img.device).t()
+
+    # Shift for YCbCr format to adjust Cb and Cr channels
+    shift = torch.tensor([0, 128, 128], dtype=img.dtype, device=img.device).view(1, 3, 1, 1)
+
+    # Reshape img for matrix multiplication: [N, H*W, C]
+    img_reshaped = img.permute(0, 2, 3, 1).reshape(img.shape[0], -1, 3)
+
+    # Matrix multiplication
+    ycbcr = torch.matmul(img_reshaped, transform)
+
+    # Reshape back to [N, C, H, W] and add shift
+    ycbcr = ycbcr.view(img.shape[0], img.shape[2], img.shape[3], 3).permute(0, 3, 1, 2) + shift
+
+    # Clipping the results to valid range
+    ycbcr = torch.clamp(ycbcr, 0, 255)
+
+    return ycbcr
+
+def ycbcr_to_rgb_torch(img):
+    # Constants for YCbCr to RGB conversion
+    transform = torch.tensor([
+        [1.0, 0.0, 1.402],       # coefficients for R
+        [1.0, -0.344136, -0.714136],  # coefficients for G
+        [1.0, 1.772, 0.0]        # coefficients for B
+    ], dtype=img.dtype, device=img.device).t()
+
+    # Reverse the shift for YCbCr format
+    shift = torch.tensor([0, -128, -128], dtype=img.dtype, device=img.device).view(1, 3, 1, 1)
+
+    # Reshape img for matrix multiplication: [N, H*W, C]
+    img_reshaped = (img - shift).permute(0, 2, 3, 1).reshape(img.shape[0], -1, 3)
+
+    # Matrix multiplication
+    rgb = torch.matmul(img_reshaped, transform)
+
+    # Reshape back to [N, C, H, W]
+    rgb = rgb.view(img.shape[0], img.shape[2], img.shape[3], 3).permute(0, 3, 1, 2)
+
+    # Clipping the results to valid range
+    rgb = torch.clamp(rgb, 0, 255)
+
+    return rgb
+
+
+
+
+

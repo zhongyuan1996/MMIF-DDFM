@@ -6,11 +6,10 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-
 from .posterior_mean_variance import get_mean_processor, get_var_processor
 
-from .EM_onestep import EM_Initial,EM_onestep
-from util.pytorch_colors import rgb_to_ycbcr, ycbcr_to_rgb
+from .EM_onestep import EM_Initial,EM_onestep, EM_Multimodal_Initial, EM_Multimodal_onestep
+from util.pytorch_colors import rgb_to_ycbcr, ycbcr_to_rgb, rgb_to_ycbcr_torch, ycbcr_to_rgb_torch
 from skimage.io import imsave
 import cv2
 __SAMPLER__ = {}
@@ -210,7 +209,36 @@ class GaussianDiffusion:
                     temp_img=((temp_img)*255).astype('uint8')
                     imsave(os.path.join(file_path, "{}.png".format(f"x_{str(idx).zfill(4)}")),temp_img)
  
-        return img       
+        return img
+
+    def p_sample_loop_multimodal(self,
+                        model,
+                        x_start,
+                        record,
+                        mg, ml, ms,
+                        save_root,
+                        img_index, lamb, eta):
+        img = x_start
+        device = x_start.device
+        pbar = tqdm(list(range(self.num_timesteps))[::-1])
+        for idx in pbar:
+            time = torch.tensor([idx] * img.shape[0], device=device)
+            img = img
+            HP = EM_Multimodal_Initial(ml) if time == torch.tensor([self.num_timesteps-1], device=device) else HP
+            out, HP = self.p_sample(model=model, x=img, t=time, bfHP = HP, ml = ml, mg = mg, ms = ms, lamb=lamb, eta=eta)
+            img= out['sample'].detach_()
+            if record:
+                if idx % 1 == 0:
+                    file_path = os.path.join(save_root, 'progress', str(img_index))
+                    os.makedirs(file_path) if not os.path.exists(file_path) else file_path
+                    temp_img= img.detach().cpu().squeeze().numpy()
+                    temp_img=np.transpose(temp_img, (1,2,0))
+                    temp_img=cv2.cvtColor(temp_img,cv2.COLOR_RGB2YCrCb)[:,:,0]
+                    temp_img=(temp_img-np.min(temp_img))/(np.max(temp_img)-np.min(temp_img))
+                    temp_img=((temp_img)*255).astype('uint8')
+                    imsave(os.path.join(file_path, "{}.png".format(f"x_{str(idx).zfill(4)}")),temp_img)
+        return img
+
         
     def p_sample(self, model, x, t):
         raise NotImplementedError
@@ -383,6 +411,56 @@ class DDPM(SpacedDiffusion):
 
         return {'sample': sample, 'pred_xstart': out['pred_xstart']}
     
+
+# currently asume input is already m_l, m_g and m_s
+@register_sampler(name='milti_ddim')
+class multi_DDIM(SpacedDiffusion):
+    def output_fusion_layer(self, input_A, input_B):
+        #a simple addition and normalization
+        return (input_A + input_B)/2
+
+    def p_sample(self, model, x, t, bfHP, ml, mg, ms, lamb, eta, old_eta=0.0):
+        out = self.p_mean_variance(model, x, t)
+        # x_0_hat_ycbcr = rgb_to_ycbcr(out['pred_xstart'])/255
+        x_0_hat_ycbcr = rgb_to_ycbcr_torch(out['pred_xstart'])/255
+
+        x_0_hat_y = torch.unsqueeze((x_0_hat_ycbcr[:,0,:,:]),1)
+        assert x_0_hat_y.shape[1]==1
+
+        x_0_hat_y_BF, bfHP = EM_Multimodal_onestep(f_pre = x_0_hat_y,
+                                            m_g = mg,
+                                            m_l = ml,
+                                            m_s = ms,
+                                            HyperP = bfHP,lamb=lamb,eta=eta)
+        x_0_hat_ycbcr[:,0,:,:] = x_0_hat_y_BF
+        # out['pred_xstart'] = ycbcr_to_rgb(x_0_hat_ycbcr*255)
+        
+        out['pred_xstart'] = ycbcr_to_rgb_torch(x_0_hat_ycbcr*255)
+
+        eps = self.predict_eps_from_x_start(x, t, out['pred_xstart'])
+        alpha_bar = extract_and_expand(self.alphas_cumprod, t, x)
+        alpha_bar_prev = extract_and_expand(self.alphas_cumprod_prev, t, x)
+        sigma = (
+            old_eta
+            * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
+            * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
+        )
+        noise = torch.randn_like(x)
+        mean_pred = (
+            out["pred_xstart"] * torch.sqrt(alpha_bar_prev)
+            + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
+        )
+        sample = mean_pred
+        if t != 0:
+            sample += sigma * noise
+        
+        return {"sample": sample, "pred_xstart": out["pred_xstart"]}, bfHP
+
+    def predict_eps_from_x_start(self, x_t, t, pred_xstart):
+        coef1 = extract_and_expand(self.sqrt_recip_alphas_cumprod, t, x_t)
+        coef2 = extract_and_expand(self.sqrt_recipm1_alphas_cumprod, t, x_t)
+        return (coef1 * x_t - pred_xstart) / coef2
+
 
 @register_sampler(name='ddim')
 class DDIM(SpacedDiffusion):
