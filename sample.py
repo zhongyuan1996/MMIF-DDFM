@@ -11,6 +11,7 @@ import numpy as np
 from skimage.io import imsave
 import warnings
 from PIL import Image
+from util.evaluators import calculate_entropy, calculate_standard_deviation, calculate_mi, calculate_ssim, reload_and_preprocess
 warnings.filterwarnings('ignore')
 
 def image_read(path, mode='RGB'):
@@ -94,12 +95,7 @@ if __name__ == '__main__':
         # Sampling
         seed = 1234
         torch.manual_seed(seed)
-        x_start = torch.randn((inf_img.repeat(1, 3, 1, 1)).shape, device=device)  
-
-        print('inf_img shape:', inf_img.shape)
-        print('vis_img shape:', vis_img.shape)
-        print('x_start shape:', x_start.shape)
-        exit()
+        x_start = torch.randn((inf_img.repeat(1, 3, 1, 1)).shape, device=device) 
 
         with torch.no_grad():
             sample = sample_fn(x_start=x_start, record=True, I = inf_img, V = vis_img, save_root=out_path, img_index = os.path.splitext(img_name)[0], lamb=0.5,rho=0.001)
@@ -116,3 +112,32 @@ if __name__ == '__main__':
         image = Image.fromarray(sample)
         image.save(os.path.join(out_path, 'recon', f"{os.path.splitext(img_name)[0]}.png"))
         i += 1
+
+    input_dir = args.input_dir
+    output_dir = os.path.join(args.save_dir, 'recon')
+
+    # Loop over images
+    EN_list = []
+    SD_list = []
+    for img_name in os.listdir(os.path.join(input_dir, "ir")):
+        path_ir = os.path.join(input_dir, "ir", img_name)
+        path_vi = os.path.join(input_dir, "vi", img_name)
+        path_fused = os.path.join(output_dir, os.path.splitext(img_name)[0] + ".png")
+
+        # Reload and preprocess images
+        inf_img = reload_and_preprocess(path_ir)
+        vis_img = reload_and_preprocess(path_vi)
+        fused_img = reload_and_preprocess(path_fused)
+
+        # Calculate metrics
+        EN = calculate_entropy(fused_img)
+        SD = calculate_standard_deviation(fused_img)
+        EN_list.append(EN)
+        SD_list.append(SD)
+
+    print(f"Average Entropy: {np.mean(EN_list)}")
+    print(f"Average Standard Deviation: {np.mean(SD_list)}")
+
+            # MI = (calculate_mi(fused_img, vis_img) + calculate_mi(fused_img, inf_img)) / 2
+            # SSIM = (calculate_ssim(fused_img, vis_img) + calculate_ssim(fused_img, inf_img)) / 2
+

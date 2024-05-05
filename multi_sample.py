@@ -5,7 +5,6 @@ import yaml
 import torch
 from guided_diffusion.unet import create_model
 from guided_diffusion.gaussian_diffusion import create_sampler
-from guided_diffusion.ViT_util import create_mapping
 from util.logger import get_logger
 import cv2
 import numpy as np
@@ -13,6 +12,7 @@ from skimage.io import imsave
 import warnings
 from PIL import Image
 from sewar.full_ref import vifp
+from util.evaluators import calculate_entropy, calculate_standard_deviation, calculate_mi, calculate_ssim, reload_and_preprocess
 warnings.filterwarnings('ignore')
 
 def image_read(path, mode='RGB'):
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_config', type=str,default = 'configs/model_config_imagenet.yaml')
     parser.add_argument('--diffusion_config', type=str,default='configs/multi_diffusion_config.yaml')                     
-    parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--gpu', type=int, default=1)
     parser.add_argument('--save_dir', type=str, default='/data/yuan/DDFM_dir/output')
     parser.add_argument('--input_dir', type=str, default='/data/yuan/DDFM_dir/input')
     parser.add_argument('--gls_config', type=str, default='configs/gls_config.yaml')
@@ -62,10 +62,10 @@ if __name__ == '__main__':
     model = model.to(device)
     model.eval()
 
-    #Initialize layers for mg, ml, and ms
-    gls_model = create_mapping(**gls_config)
-    gls_model = gls_model.to(device)
-    gls_model.train()
+    # #Initialize layers for mg, ml, and ms
+    # gls_model = create_mapping(**gls_config)
+    # gls_model = gls_model.to(device)
+    # gls_model.train()
 
     # Load diffusion sampler
     sampler = create_sampler(**diffusion_config) 
@@ -79,8 +79,8 @@ if __name__ == '__main__':
     for img_dir in ['recon', 'progress']:
         os.makedirs(os.path.join(out_path, img_dir), exist_ok=True)
 
-    optimizer = torch.optim.Adam(gls_model.parameters(), lr=1e-3)
-    criterion = torch.nn.MSELoss()
+    # optimizer = torch.optim.Adam(gls_model.parameters(), lr=1e-3)
+    # criterion = torch.nn.MSELoss()
 
     i=0
 
@@ -107,49 +107,58 @@ if __name__ == '__main__':
         torch.manual_seed(seed)
         x_start = torch.randn((inf_img.repeat(1, 3, 1, 1)).shape, device=device)
 
-        #calcualte mg, ms and ml for each modality
-        i_g, i_l, i_s = gls_model(inf_img)
-        v_g, v_l, v_s = gls_model(vis_img)
-
         #do mask prediction and loss function
-        # with torch.no_grad():
-        i_f = sample_fn(x_start=x_start, record=True, mg = i_g, ml = i_l, ms = v_s, save_root=out_path, img_index = os.path.splitext(img_name)[0], lamb=0.5, eta=0.001)
-        v_f = sample_fn(x_start=x_start, record=True, mg = v_g, ml = v_l, ms = v_s, save_root=out_path, img_index = os.path.splitext(img_name)[0], lamb=0.5, eta=0.001)
-        
-        print("i_f requires grad:", i_f.requires_grad)
-        print("v_f requires grad:", v_f.requires_grad)
-        exit()
+        with torch.no_grad():
+            sample_A = sample_fn(x_start=x_start, record=True, I = inf_img, V = vis_img, save_root=out_path, img_index = os.path.splitext(img_name)[0], lamb=0.5,rho=0.001)
+            # sample_B = sample_fn(x_start=x_start, record=True, I = vis_img, V = inf_img, save_root=out_path, img_index = os.path.splitext(img_name)[0], lamb=0.5,rho=0.001)
 
-        loss_i = criterion(i_f, inf_img)
-        loss_v = criterion(v_f, vis_img)
-        loss = loss_i + loss_v
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        logger.info(f"Loss: {loss.item()}")
-
-        #samve images of both modalities
-        i_f = i_f.detach().cpu().squeeze().numpy()
-        i_f = np.transpose(i_f, (1,2,0))
-        i_f = cv2.cvtColor(i_f, cv2.COLOR_RGB2YCrCb)[:,:,0]
-        i_f = (i_f - np.min(i_f)) / (np.max(i_f) - np.min(i_f)) * 255
-        i_f = i_f.astype(np.uint8)
-        i_image = Image.fromarray(i_f)
-        i_image.save(os.path.join(out_path, 'recon', f"{os.path.splitext(img_name)[0]+'if'}_i.png"))
-
-        v_f = v_f.detach().cpu().squeeze().numpy()
-        v_f = np.transpose(v_f, (1,2,0))
-        v_f = cv2.cvtColor(v_f, cv2.COLOR_RGB2YCrCb)[:,:,0]
-        v_f = (v_f - np.min(v_f)) / (np.max(v_f) - np.min(v_f)) * 255
-        v_f = v_f.astype(np.uint8)
-        v_image = Image.fromarray(v_f)
-        v_image.save(os.path.join(out_path, 'recon', f"{os.path.splitext(img_name)[0]+'if'}_v.png"))
-
+        sample_A=sample_A.detach().cpu().squeeze().numpy()
+        # sample_B=sample_B.detach().cpu().squeeze().numpy()
+        sample_A = np.transpose(sample_A, (1,2,0))
+        # sample_B = np.transpose(sample_B, (1,2,0))
+        sample_A = cv2.cvtColor(sample_A,cv2.COLOR_RGB2YCrCb)[:,:,0]
+        # sample_B = cv2.cvtColor(sample_B,cv2.COLOR_RGB2YCrCb)[:,:,0]
+        sample_A = (sample_A - np.min(sample_A)) / (np.max(sample_A) - np.min(sample_A)) * 255
+        # sample_B = (sample_B - np.min(sample_B)) / (np.max(sample_B) - np.min(sample_B)) * 255
+        sample_A = sample_A.astype(np.uint8)
+        # sample_B = sample_B.astype(np.uint8)
+        image_A = Image.fromarray(sample_A)
+        # image_B = Image.fromarray(sample_B)
+        image_A.save(os.path.join(out_path, 'recon', f"{os.path.splitext(img_name)[0]}_A.png"))
+        # image_B.save(os.path.join(out_path, 'recon', f"{os.path.splitext(img_name)[0]}_B.png"))
         i += 1
 
+        # sample= sample.detach().cpu().squeeze().numpy()
+        # sample=np.transpose(sample, (1,2,0))
+        # sample=cv2.cvtColor(sample,cv2.COLOR_RGB2YCrCb)[:,:,0]
         # sample = (sample - np.min(sample)) / (np.max(sample) - np.min(sample)) * 255
         # sample = sample.astype(np.uint8)
         # image = Image.fromarray(sample)
         # image.save(os.path.join(out_path, 'recon', f"{os.path.splitext(img_name)[0]}.png"))
         # i += 1
+
+
+
+    input_dir = args.input_dir
+    output_dir = os.path.join(args.save_dir, 'recon')
+    EN_list = []
+    SD_list = []
+    # Loop over images
+    for img_name in os.listdir(os.path.join(input_dir, "ir")):
+        path_ir = os.path.join(input_dir, "ir", img_name)
+        path_vi = os.path.join(input_dir, "vi", img_name)
+        path_fused = os.path.join(output_dir, os.path.splitext(img_name)[0] + "_A.png")
+
+        # Reload and preprocess images
+        inf_img = reload_and_preprocess(path_ir)
+        vis_img = reload_and_preprocess(path_vi)
+        fused_img = reload_and_preprocess(path_fused)
+
+        # Calculate metrics
+        EN = calculate_entropy(fused_img)
+        SD = calculate_standard_deviation(fused_img)
+        EN_list.append(EN)
+        SD_list.append(SD)
+
+    print(f"Average Entropy: {np.mean(EN_list)}")
+    print(f"Average Standard Deviation: {np.mean(SD_list)}")

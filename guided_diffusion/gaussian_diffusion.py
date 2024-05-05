@@ -8,9 +8,10 @@ from tqdm.auto import tqdm
 
 from .posterior_mean_variance import get_mean_processor, get_var_processor
 
-from .EM_onestep import EM_Initial,EM_onestep, EM_Multimodal_Initial, EM_Multimodal_onestep
-from util.pytorch_colors import rgb_to_ycbcr, ycbcr_to_rgb, rgb_to_ycbcr_torch, ycbcr_to_rgb_torch
+from .EM_onestep import EM_Initial,EM_onestep, EM_Initial_gls, EM_onestep_gls
+from util.pytorch_colors import rgb_to_ycbcr, ycbcr_to_rgb
 from skimage.io import imsave
+import logging
 import cv2
 __SAMPLER__ = {}
 
@@ -183,6 +184,8 @@ class GaussianDiffusion:
         img = x_start
         device = x_start.device
 
+        
+
         pbar = tqdm(list(range(self.num_timesteps))[::-1])
         for idx in pbar:
             time = torch.tensor([idx] * img.shape[0], device=device)
@@ -212,24 +215,26 @@ class GaussianDiffusion:
         return img
 
     def p_sample_loop_multimodal(self,
-                        model,
-                        x_start,
-                        record,
-                        mg, ml, ms,
-                        save_root,
-                        img_index, lamb, eta):
+                      model,
+                      x_start, 
+                      record, 
+                      I, 
+                      V, 
+                      save_root,
+                      img_index, lamb,rho):
         img = x_start
         device = x_start.device
+
         pbar = tqdm(list(range(self.num_timesteps))[::-1])
         for idx in pbar:
             time = torch.tensor([idx] * img.shape[0], device=device)
             img = img
-            HP = EM_Multimodal_Initial(ml) if time == torch.tensor([self.num_timesteps-1], device=device) else HP
-            out, HP = self.p_sample(model=model, x=img, t=time, bfHP = HP, ml = ml, mg = mg, ms = ms, lamb=lamb, eta=eta)
-            img= out['sample'].detach_()
+            HP = EM_Initial_gls(I) if time == torch.tensor([self.num_timesteps-1], device=device) else HP
+            out, HP = self.p_sample(x=img, t=time, model=model, bfHP = HP, infrared = I, visible = V, lamb=lamb, rho=rho)
+            img = out['sample'].detach_()
             if record:
                 if idx % 1 == 0:
-                    file_path = os.path.join(save_root, 'progress', str(img_index))
+                    file_path = os.path.join(save_root, 'progressMulti', str(img_index))
                     os.makedirs(file_path) if not os.path.exists(file_path) else file_path
                     temp_img= img.detach().cpu().squeeze().numpy()
                     temp_img=np.transpose(temp_img, (1,2,0))
@@ -419,25 +424,27 @@ class multi_DDIM(SpacedDiffusion):
         #a simple addition and normalization
         return (input_A + input_B)/2
 
-    def p_sample(self, model, x, t, bfHP, ml, mg, ms, lamb, eta, old_eta=0.0):
-        out = self.p_mean_variance(model, x, t)
-        # x_0_hat_ycbcr = rgb_to_ycbcr(out['pred_xstart'])/255
-        x_0_hat_ycbcr = rgb_to_ycbcr_torch(out['pred_xstart'])/255
+    def p_sample(self, model, x, t, bfHP, infrared, visible, lamb,rho, old_eta=0.0):
 
+        out = self.p_mean_variance(model, x, t)
+        x_0_hat_ycbcr = rgb_to_ycbcr(out['pred_xstart'])/255 # (-1,1)
         x_0_hat_y = torch.unsqueeze((x_0_hat_ycbcr[:,0,:,:]),1)
         assert x_0_hat_y.shape[1]==1
 
-        x_0_hat_y_BF, bfHP = EM_Multimodal_onestep(f_pre = x_0_hat_y,
-                                            m_g = mg,
-                                            m_l = ml,
-                                            m_s = ms,
-                                            HyperP = bfHP,lamb=lamb,eta=eta)
-        x_0_hat_ycbcr[:,0,:,:] = x_0_hat_y_BF
-        # out['pred_xstart'] = ycbcr_to_rgb(x_0_hat_ycbcr*255)
+        x_0_hat_y_BF, bfHP = EM_onestep_gls(f_pre = x_0_hat_y,
+                                            I = infrared,
+                                            V = visible,
+                                            HyperP = bfHP,lamb=lamb,rho=rho)
         
-        out['pred_xstart'] = ycbcr_to_rgb_torch(x_0_hat_ycbcr*255)
+        
+
+        x_0_hat_ycbcr[:,0,:,:] = x_0_hat_y_BF
+        out['pred_xstart'] = ycbcr_to_rgb(x_0_hat_ycbcr*255)
+
 
         eps = self.predict_eps_from_x_start(x, t, out['pred_xstart'])
+
+
         alpha_bar = extract_and_expand(self.alphas_cumprod, t, x)
         alpha_bar_prev = extract_and_expand(self.alphas_cumprod_prev, t, x)
         sigma = (
@@ -445,11 +452,15 @@ class multi_DDIM(SpacedDiffusion):
             * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
             * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
         )
+
         noise = torch.randn_like(x)
+
+
         mean_pred = (
             out["pred_xstart"] * torch.sqrt(alpha_bar_prev)
             + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
         )
+
         sample = mean_pred
         if t != 0:
             sample += sigma * noise
